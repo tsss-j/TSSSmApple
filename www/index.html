@@ -1,0 +1,567 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+
+<!-- js -->
+<script type="text/javascript" src="js/jquery-1.11.3.min.js"></script>
+<script src="https://code.createjs.com/easeljs-0.8.0.min.js"></script>
+<script type="text/javascript" src="js/bootstrap.min.js"></script>
+<script type="text/javascript" src="js/bootstrap-select.js"></script>
+<script type="text/javascript" src="js/jquery-ui.min.js"></script>
+<script>
+/********************************************************
+ *							変数定義										*
+ ********************************************************/
+// キャンバスの横幅, 高さ
+var canvasWidth = 720;
+var canvasHeight = 960;
+// 入力フォームの横幅
+var formWidth = 240;
+// 1グリッドあたりのサイズ（１辺の長さ）
+var gridSize = 10;
+// 生成時における最初の位置（x, y）
+var initX = 0, initY = 0;
+// グリッドにおける番地
+var gridX, gridY;
+// 現在のモード
+var selectMode = "create";
+// 削除対象を記憶する配列
+var deleteArray = [];
+// サイズ変更を受け付ける領域のサイズ（１辺の長さ）
+var resizeArea = 10;
+// サイズ変更ができる状態であるかどうか
+var resizeFlg = false;
+// サイズ変更中であるかどうか
+var onResizing = false;
+// sprint1 デフォルトの色
+var defaultColor = "#333333";
+// 会場図画像ファイル名
+var backGroundFileName = "";
+
+
+/********************************************************
+ *							読み込み時の処理							*
+ ********************************************************/
+$(function() {
+	/* ブラウザのサイズに合わせてキャンバスの大きさを調整します
+	canvasWidth = Math.floor(($( window ).width() - formWidth) / gridSize) * gridSize;
+	canvasHeight = $( window ).height();
+	*/
+	$( '#demoCanvas' ).get( 0 ).width = canvasWidth;
+	$( '#demoCanvas' ).get( 0 ).height = canvasHeight;
+	$('[name^="objectWidth"]').attr("max",canvasWidth);
+	$('[name^="objectHeight"]').attr("max",canvasHeight);
+	
+	canvasElement = document.getElementById("demoCanvas");
+	stage = new createjs.Stage(canvasElement);
+	stage.enableMouseOver();
+	stage.enableDOMEvents(true);
+	stage.addEventListener("stagemousemove",function(eventObject) {
+		// オブジェクト ロールオーバー移動中の処理がないためここに記述
+		checkResize(eventObject.stageX, eventObject.stageY);
+	});
+});
+
+
+/********************************************************
+ *					ブラウザのリサイズ時の処理						*
+ ********************************************************/
+$(window).on('load resize', function(){
+	/* ブラウザのサイズに合わせてキャンバスの大きさを調整します
+	canvasWidth = Math.floor(($( window ).width() - formWidth) / gridSize) * gridSize;
+	canvasHeight = $( window ).height();
+	$( '#demoCanvas' ).get( 0 ).width = canvasWidth;
+	$( '#demoCanvas' ).get( 0 ).height = canvasHeight;
+	*/
+});
+
+
+/********************************************************
+ *	オブジェクトのリサイズ領域にマウスポインタがあるか検査	*
+ ********************************************************/
+function checkResize(x, y){
+	if(selectMode == "create" && !onResizing){
+		childArray = stage.children;
+		resizeFlg = false;
+		for(i=0; i<childArray.length; i++){
+			objectX = childArray[i].x;
+			objectY = childArray[i].y;
+			objectWidth = parseInt(childArray[i].graphics.command.w);
+			objectHeight = parseInt(childArray[i].graphics.command.h);
+			objectRightBottom = {'x': objectX + objectWidth, 'y': objectY + objectHeight};
+			if(x < objectRightBottom.x && x > objectRightBottom.x - resizeArea && y < objectRightBottom.y && y > objectRightBottom.y - resizeArea){
+				resizeFlg = true;
+				// サイズ変更用のカーソルに変更
+				childArray[i].cursor = "se-resize";
+				break;
+			}else{
+				childArray[i].cursor = "pointer";
+			}
+		}
+	}
+}
+
+/********************************************************
+ *							オブジェクト処理							*
+ ********************************************************/
+// オブジェクト配置処理
+function setObject(){
+	var objectWidth = Math.ceil($('[name^="objectWidth"]').val() / gridSize) * gridSize;
+	var objectHeight = Math.ceil($('[name^="objectHeight"]').val() / gridSize) * gridSize;;
+	if( objectWidth == '' || objectHeight == '' ){
+		alert("入力項目に記入漏れがあります");
+	}else if( objectWidth <= 0 || objectHeight <= 0 ){
+		alert("入力値は0より大きい値を入力してください");
+	}else if( objectWidth > canvasWidth || objectHeight > canvasHeight ){
+		alert("幅"+canvasWidth+"px, 高さ"+canvasHeight+"px を超える値は設定できません");
+	}else{
+		var objectColor = $('[name^="objectColor"]').val();
+		var object = createObject(initX, initY, objectWidth, objectHeight, objectColor);
+		stage.addChild(object);
+		stage.update();
+		object.addEventListener("mousedown", startDrag);
+	}
+}
+
+// オブジェクト生成処理
+function createObject(x, y, w, h, color) {
+	var object = new createjs.Shape();
+	object.x = x;
+	object.y = y;
+	object.graphics.beginFill(color);
+	object.graphics.drawRect(0, 0, w, h);
+	object.cursor = "pointer";
+	return object;
+}
+
+/********************************************************
+ *							マウスイベント処理							*
+ ********************************************************/
+// ドラッグの開始処理
+function startDrag(eventObject) {
+	var instance = eventObject.target;
+	// オブジェクト上のどの位置をクリックしたか
+	onPointX = eventObject.stageX - instance.x;
+	onPointY = eventObject.stageY - instance.y;
+	if(selectMode == "create"){
+		if(!resizeFlg){
+			// 移動
+			instance.addEventListener("pressmove", drag);
+			instance.addEventListener("pressup", stopDrag);
+		}else if(resizeFlg){
+			// サイズ変更
+			instance.addEventListener("pressmove", resizeDrag);	
+			instance.addEventListener("pressup", stopResizeDrag);
+		}
+	}else if(selectMode == "delete"){
+		// 削除対象選択
+		instance.addEventListener("pressup", selectDelete);
+	}
+}
+
+// ＜移動＞ドラッグ中の処理
+function drag(eventObject) {
+	var instance = eventObject.target;
+	var width = parseInt(instance.graphics.command.w);
+	var height = parseInt(instance.graphics.command.h);
+	var leftTop = { x: instance.x, y: instance.y };
+	var rightTop = { x: instance.x + width , y: instance.y };
+	var rightBottom = { x:instance.x + width , y: instance.y + height };
+	var leftBottom = { x: instance.x , y: instance.y + height };
+	// ポインタ位置が画面外だった時の分岐
+	if((onPointX <= eventObject.stageX)&&(eventObject.stageX <= canvasWidth - width + onPointX)
+	&&(onPointY <= eventObject.stageY)&&(eventObject.stageY <= canvasHeight -height + onPointY)){
+		// in canvas
+		instance.x = Math.round((eventObject.stageX - onPointX)/gridSize)*gridSize;
+		instance.y = Math.round((eventObject.stageY - onPointY)/gridSize)*gridSize;
+	}else if((onPointX <= eventObject.stageX)&&(eventObject.stageX <= canvasWidth - width + onPointX)
+	&&(0 <= eventObject.stageY)&&(eventObject.stageY < onPointY)){
+		// over top
+		instance.x = Math.round((eventObject.stageX - onPointX)/gridSize)*gridSize;
+	}else if((canvasWidth - width + onPointX < eventObject.stageX)&&(eventObject.stageX <= canvasWidth)
+	&&(onPointY <= eventObject.stageY)&&(eventObject.stageY <= canvasHeight -height + onPointY)){
+		// over right
+		instance.y = Math.round((eventObject.stageY - onPointY)/gridSize)*gridSize;
+	}else if((onPointX <= eventObject.stageX)&&(eventObject.stageX <= canvasWidth - width + onPointX)
+	&&(canvasHeight - height + onPointY < eventObject.stageY)&&(eventObject.stageY <= canvasHeight)){
+		// over bottom
+		instance.x = Math.round((eventObject.stageX - onPointX)/gridSize)*gridSize;
+	}else if((0 <= eventObject.stageX)&&(eventObject.stageX <= onPointX)
+	&&(onPointY <= eventObject.stageY)&&(eventObject.stageY <= canvasHeight -height + onPointY)){
+		// over left
+		instance.y = Math.round((eventObject.stageY - onPointY)/gridSize)*gridSize;
+	}
+	stage.update();
+}
+
+// ＜移動＞ドラッグの終了処理
+function stopDrag(eventObject) {
+	var instance = eventObject.target;
+	instance.removeEventListener("pressmove", drag);
+	instance.removeEventListener("pressup", stopDrag);
+	/* 要望による処理追加 */
+	gridX = instance.x / gridSize;
+	gridY = instance.y / gridSize;
+	console.log("object address : ["+gridX+","+gridY+"]");
+}
+
+// ＜サイズ変更＞ドラック中の処理
+function resizeDrag(eventObject) {
+	var instance = eventObject.target;
+	instance.graphics.command.w = Math.ceil((eventObject.stageX - instance.x)/gridSize)*gridSize;
+	instance.graphics.command.h =  Math.ceil((eventObject.stageY - instance.y)/gridSize)*gridSize;
+	// 横幅がグリッドサイズより小さいとき
+	if(instance.graphics.command.w < gridSize){
+		instance.graphics.command.w = gridSize;
+	}
+	// 高さがグリッドサイズより小さいとき
+	if(instance.graphics.command.h < gridSize){
+		instance.graphics.command.h = gridSize;
+	}
+	stage.update();
+	onResizing = true;
+}
+
+// ＜サイズ変更＞ドラッグの終了処理
+function stopResizeDrag(eventObject) {
+	var instance = eventObject.target;
+	instance.removeEventListener("pressmove", resizeDrag);
+	instance.removeEventListener("pressup", stopResizeDrag);
+	onResizing = false;
+}
+
+
+// ＜削除＞削除対象の選択
+function selectDelete(eventObject){
+	var instance = eventObject.target;
+	var width = parseInt(instance.graphics.command.w);
+	var height = parseInt(instance.graphics.command.h);
+	
+	if(instance.__deleteSelected == null || instance.__deleteSelected == false){
+		instance.__deleteSelected = true;
+		var checkImage = new createjs.Bitmap('img/ico_check.png');
+		checkImage.x = instance.x + width - (checkImage.image.width / 2);
+		checkImage.y = instance.y - (checkImage.image.height / 2);
+		checkImage.__relationID = instance.id;
+		stage.addChild(checkImage);
+		deleteArray.push(instance.id);
+	}else{
+		instance.__deleteSelected = false;
+		var array = stage.children;
+		/* もう少しスマートな方法さがしています */
+		for(i=0; i<array.length; i++){
+			if(array[i].__relationID == instance.id){
+				stage.removeChildAt(i);
+			}
+		}
+		for(i=0; i<deleteArray.length; i++){
+			if(deleteArray[i] == instance.id){
+				deleteArray.splice(i,1);
+			}
+		}
+	}
+	stage.update();
+	instance.removeEventListener("pressup", selectDelete);
+}
+
+/********************************************************
+ *								JSON処理									*
+ ********************************************************/
+/* JSON 書き込み処理 */
+function saveJson(){
+	var objectArray = [];
+	var id, x, y, w, h;
+	for(i=0; i<stage.children.length; i++){
+		//id = stage.children[i].id;
+		x = stage.children[i].x;
+		y = stage.children[i].y;
+		// stage.children[i].graphics.command.- の値の型がなぜか文字列
+		w = parseInt(stage.children[i].graphics.command.w);
+		h = parseInt(stage.children[i].graphics.command.h);
+		//array = {'id': id, 'x': x, 'y': y, 'w': w, 'h': h}
+		array = {'x': x, 'y': y, 'w': w, 'h': h};
+		objectArray.push(array);
+	}
+	
+	// 既に会場図が設置してあれば、画像情報を配列の先頭に格納
+	var searchImageFileName = "backGround.png";
+	if($(canvasElement).css("background-image").indexOf(searchImageFileName) != -1){
+		objectArray.unshift({'filename':searchImageFileName});
+	}
+	
+	$.ajax({
+		type: "POST",
+		url: "php/save.php",
+		//data: "id=" + id +"&x=" + x + "&y=" + y + "&w=" + w + "&h=" + h,
+		data: { "data": objectArray },
+		success: function(msg){
+			alert(msg);
+		}
+	});
+}
+
+/* JSON 読み込み処理 */
+function loadJson(){
+	var objectList;
+	stage.removeAllChildren();
+	$.getJSON("json/data.json", function(json){
+		if(json[0].filename!=null){
+			var file = json[0];
+			json.splice(0, 1);
+			backGroundFileName=file.filename.toString();
+			$(canvasElement).css("background-image","url(img/dot.png), url(img/"+file.filename.toString()+")");
+			$(canvasElement).css("background-repeat","repeat, no-repeat");
+		}
+		objectList=json;
+		
+		for(i=0; i<json.length; i++){
+			var instance = createObject(parseInt(objectList[i].x), parseInt(objectList[i].y), parseInt(objectList[i].w), parseInt(objectList[i].h), defaultColor);
+			instance.cursor = "pointer";
+			instance.__deleteSelected = false;
+			console.log(instance);
+			stage.addChild(instance);
+			instance.addEventListener("mousedown", startDrag);
+		}
+		stage.update();
+	})
+	.error(function(jqXHR, textStatus, errorThrown) {
+		alert("JSONファイルがありません");
+	});
+}
+
+/********************************************************
+ *								削除モード									*
+ ********************************************************/
+ function changeDeleteMode(){
+ 	selectMode = $('[name^="selectMode"]').val();
+	if(selectMode == "delete"){
+		$('[name^="objectWidth"]').prop("disabled", true);
+		$('[name^="objectHeight"]').prop("disabled", true);
+		$('[name^="objectColor"]').prop("disabled", true);
+		$('[name^="createButton"]').prop("disabled", true);
+		$('[name^="saveButton"]').prop("disabled", true);
+		$('[name^="loadButton"]').prop("disabled", true);
+		$('[name^="selectFile"]').prop("disabled", true);
+		$('[name^="deleteButton"]').prop("disabled", false);
+	}else if(selectMode == "create"){
+		/* もう少しスマートな方法さがしています */
+		// 削除対象に付与したチェック画像を削除する
+		var array = stage.children;
+		for(i=array.length-1; i>=0; i--){
+			if(array[i].__relationID){
+				stage.removeChildAt(i);
+				stage.update();
+			}else{
+				array[i].__deleteSelected = false;
+			}
+		}
+		deleteArray = [];
+		$('[name^="objectWidth"]').prop("disabled", false);
+		$('[name^="objectHeight"]').prop("disabled", false);
+		$('[name^="objectColor"]').prop("disabled", false);
+		$('[name^="createButton"]').prop("disabled", false);
+		$('[name^="saveButton"]').prop("disabled", false);
+		$('[name^="loadButton"]').prop("disabled", false);
+		$('[name^="selectFile"]').prop("disabled", false);
+		$('[name^="deleteButton"]').prop("disabled", true);
+	}
+ }
+function deleteObject(){
+	if(deleteArray.length == 0){
+		alert("削除する対象のオブジェクトが選択されていません");
+	}else{
+		/* 確認ダイアログの表示 */
+		$( "#dialogDeleteConfirm" ).dialog({
+			resizable: false,
+			height:140,
+			modal: true,
+			buttons: {
+				"はい": function() {
+						/* もう少しスマートな方法を探しています */
+						// 削除対象のオブジェクトと付与したチェック画像を削除する
+						var childArray = stage.children;
+						for(i=deleteArray.length - 1; i>=0; i--){
+							for(j=childArray.length - 1; j>=0; j--){
+								if(childArray[j].id == deleteArray[i] || childArray[j].__relationID == deleteArray[i]){
+									stage.removeChildAt(j);
+									stage.update();
+								}
+							}
+							deleteArray.splice(i,1);
+						}
+						$( this ).dialog( "close" );
+				},
+				"いいえ": function() {
+						$( this ).dialog( "close" );
+				}
+			}
+		});
+	}
+}
+
+
+/********************************************************
+ *							会場図設置処理									*
+ ********************************************************/
+/* ボタンと連携してtype="file"のボタンが作動するようにする */
+function selectFile(){
+	$('#backGroundImage').trigger('click');
+}
+
+/* ajaxによるファイルのアップロード処理 */
+function fileUpLoad(){
+	var fd = new FormData($('#upLoadForm').get(0));
+	$.ajax({
+		url: "php/fileUploader.php",
+		type: "POST",
+		data: fd,
+		processData: false,
+		contentType: false,
+	})
+	.done(function(msg) {
+		alert(msg);
+		backGroundFileName = "backGround.png";
+		$(canvasElement).css("background-image","url(img/dot.png), url(img/"+backGroundFileName.toString()+")");
+		$(canvasElement).css("background-repeat","repeat, no-repeat");
+	});
+}
+</script>
+
+<!-- css -->
+<link rel="stylesheet" href="css/reset.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/bootstrap.min.css">
+<link rel="stylesheet" href="css/bootstrap-select.css">
+<link rel="stylesheet" href="css/jquery-ui.min.css">
+<style>
+/* キャンバスサイズ固定のためコメントアウト
+html, body {
+	overflow: hidden;
+}
+*/
+#inputArea {
+	position: absolute;
+	right: 0;
+	top : 0;
+	background: #fff;
+	width: 240px;
+	height: 100%;
+	padding: 20px;
+}
+#inputArea .form {
+	margin-bottom: 20px;
+}
+#inputArea #fileForm {
+/*
+	position: absolute;
+	bottom: 20px;
+*/
+}
+/* boostrap hack */
+.btn {
+	width: 100%;
+}
+fieldset {
+	padding: 15px;
+	margin: 0;
+	border: 1px solid silver;
+	border-radius: 10px;
+}
+legend {
+	text-align: center;
+	font-size: 16px;
+	width: 80%;
+}
+/* bootstrap-select hack */
+ul.dropdown-menu li {
+	list-style: none;
+}
+.bootstrap-select {
+	width: 120px !important;
+	margin-bottom: 20px;
+}
+.dropdown-menu {
+	width: auto !important;
+}
+/* jquery-ui hack */
+#dialogDeleteConfirm {
+	height: auto !important;
+}
+</style>
+<title>tsss - sprint1 review</title>
+</head>
+
+<body>
+<!-- inputArea -->
+<div id="inputArea"> 
+<!-- selectForm -->
+<select name="selectMode" class="selectpicker" onChange="changeDeleteMode()">
+<option value="create">生成モード</option>
+<option value="delete">削除モード</option>
+</select>
+<!-- //selectForm --> 
+<!-- createForm -->
+<div id="createForm" class="form">
+<fieldset>
+<legend>生成フィールド</legend>
+<p>width :
+<input  type="number" class="form-control" name="objectWidth" inputmode="numeric" size="10" value="100" min="1" onKeyup="this.value=this.value.replace(/[^0-9a-z]+/i,'')">
+</p>
+<p>height :
+<input type="number" class="form-control" name="objectHeight" inputmode="numeric" size="10" value="100" min="1" onKeyup="this.value=this.value.replace(/[^0-9a-z]+/i,'')">
+</p>
+<!-- sprint1 に含まれていない機能なのでdisplay:none; -->
+<p class="disno">color :
+<input type="color" class="form-control" name="objectColor" value="#333333">
+</p>
+<p>
+<input type="button" name="createButton" class="btn btn-default" onClick="setObject()" value="生成">
+</p>
+</fieldset>
+</div>
+<!-- //createForm --> 
+<!-- deleteForm -->
+<div id="deleteForm" class="form">
+<p>
+<input type="button" name="deleteButton" class="btn btn-default" onClick="deleteObject()" value="削除" disabled>
+</p>
+</div>
+<!-- //deleteForm --> 
+<!-- uploadForm -->
+<div id="uploadForm" class="form"> 
+<!-- bootstrap デフォルトのtype="file"はかっこわるいのでdisplay:none 動作はさせる -->
+<form id="upLoadForm" class="disno" value="会場図設置">
+<input  type="file" id="backGroundImage" class="btn btn-default" accept="image/png" name="backGroundImage" onChange="fileUpLoad()">
+</form>
+<p>
+<button id="selectFile" name="selectFile" class="btn btn-default" type="button" onClick="selectFile()">会場図設置</button>
+</p>
+<p><a href="img/backGround.png" target="_blank">保存した会場図はコチラ</a></p>
+</div>
+<!-- //uploadForm --> 
+<!-- fileForm -->
+<div id="fileForm" class="form">
+<p>
+<input type="button" name="saveButton" class="btn btn-default" onClick="if(confirm('保存してもよろしいですか？'))saveJson()" value="保存">
+</p>
+<p>
+<input type="button" name="loadButton" class="btn btn-default" onClick="loadJson()" value="読み込み">
+</p>
+<p><a href="json/data.json" target="_blank">JSONファイルはコチラ</a></p>
+</div>
+<!-- //fileForm --> 
+</div>
+<!-- //inputArea --> 
+<!-- canvasArea -->
+<div id="canvasArea">
+<canvas id="demoCanvas" width="1180" height="960"></canvas>
+</div>
+<!-- //canvasArea --> 
+<!-- dialogDeleteConfirm -->
+<div id="dialogDeleteConfirm" class="disno" title="削除確認">
+<p>本当に削除してもよろしいですか？</p>
+</div>
+<!-- //dialogDeleteConfirm -->
+</body>
+</html>
